@@ -1,6 +1,6 @@
 import unittest
 
-from avito_monitor import build_search_url, price_from_text
+from avito_monitor import COMPONENT_NAMES, PRODUCTS, build_search_url, price_from_text
 
 
 class AvitoMonitorTests(unittest.TestCase):
@@ -19,6 +19,15 @@ class AvitoMonitorTests(unittest.TestCase):
         self.assertEqual(price_from_text("12 345 ₽"), 12345)
         self.assertEqual(price_from_text("9999"), 9999)
         self.assertIsNone(price_from_text("договорная"))
+
+    def test_every_component_has_catalog_entry(self):
+        for component in COMPONENT_NAMES:
+            self.assertIn(component, PRODUCTS)
+
+    def test_main_component_manufacturers_are_present(self):
+        self.assertIn("Kingston", PRODUCTS["Оперативная память"][1])
+        self.assertIn("NVIDIA", PRODUCTS["Видеокарта"][1])
+        self.assertIn("Seasonic", PRODUCTS["Блок питания"][1])
 
 
 if __name__ == "__main__":

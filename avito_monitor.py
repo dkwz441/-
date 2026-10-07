@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import random
 import re
@@ -24,6 +25,178 @@ PROFILE_DIR = APP_DIR / ".avito-browser-profile"
 SEEN_FILE = APP_DIR / ".avito-seen.json"
 MIN_INTERVAL_SECONDS = 60
 CHALLENGE_WAIT_SECONDS = 600
+
+CITIES = {
+    "Вся Россия": "rossiya",
+    "Москва": "moskva",
+    "Санкт-Петербург": "sankt-peterburg",
+    "Новосибирск": "novosibirsk",
+    "Екатеринбург": "ekaterinburg",
+    "Казань": "kazan",
+    "Нижний Новгород": "nizhniy_novgorod",
+    "Краснодар": "krasnodar",
+    "Челябинск": "chelyabinsk",
+    "Самара": "samara",
+    "Уфа": "ufa",
+    "Ростов-на-Дону": "rostov-na-donu",
+    "Омск": "omsk",
+    "Красноярск": "krasnoyarsk",
+    "Воронеж": "voronezh",
+    "Пермь": "perm",
+    "Волгоград": "volgograd",
+    "Тюмень": "tyumen",
+    "Саратов": "saratov",
+    "Тула": "tula",
+}
+
+CATEGORIES = {
+    "Все категории": "all",
+    "Электроника": "elektronika",
+    "Бытовая техника": "bytovaya_tehnika",
+    "Для дома и дачи": "dlya_doma_i_dachi",
+    "Личные вещи": "lichnye_veschi",
+    "Транспорт": "transport",
+    "Запчасти и аксессуары": "zapchasti_i_aksessuary",
+    "Хобби и отдых": "hobbi_i_otdyh",
+    "Животные": "zhivotnye",
+    "Недвижимость": "nedvizhimost",
+    "Работа": "rabota",
+    "Услуги": "uslugi",
+    "Готовый бизнес и оборудование": "gotoviy_biznes_i_oborudovanie",
+}
+
+PRODUCTS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "Другой товар": ("", ()),
+    "Оперативная память": (
+        "оперативная память",
+        (
+            "ADATA", "AMD", "Apacer", "Asgard", "Acer Predator", "Biwin", "Corsair", "Crucial",
+            "Digma", "Exegate", "Foxline", "G.Skill", "GeIL", "Gigabyte", "Gloway", "Goodram",
+            "Hiksemi", "Hynix", "KingBank", "Kingmax", "Kingston", "KLEVV", "Lexar", "Micron",
+            "Mushkin", "Netac", "OLOy", "Patriot", "PNY", "Qumo", "Samsung", "Silicon Power",
+            "SK hynix", "TeamGroup", "Thermaltake", "Transcend", "V-Color", "Walram", "XPG",
+            "Juhor", "Zeppelin",
+        ),
+    ),
+    "Процессор": ("процессор", ("AMD", "Intel")),
+    "Видеокарта": (
+        "видеокарта",
+        (
+            "AFOX", "AMD", "ASRock", "ASUS", "Biostar", "Colorful", "Dell", "EVGA", "Gainward",
+            "Galax", "Gigabyte", "HP", "Inno3D", "Intel", "KFA2", "Leadtek", "Lenovo", "Manli",
+            "Maxsun", "MSI", "NVIDIA", "Palit", "PNY", "PowerColor", "Sapphire", "Sinotex Ninja",
+            "Sparkle", "XFX", "Yeston", "Zotac",
+        ),
+    ),
+    "Материнская плата": (
+        "материнская плата",
+        (
+            "AFOX", "ASRock", "ASUS", "Biostar", "Colorful", "ECS", "EVGA", "Foxconn", "Gigabyte",
+            "HUANANZHI", "JGINYUE", "Machinist", "Maxsun", "MSI", "NZXT", "Supermicro", "X99",
+        ),
+    ),
+    "SSD": (
+        "SSD",
+        (
+            "ADATA", "Apacer", "Biwin", "Crucial", "Digma", "Fanxiang", "Goodram", "Hiksemi",
+            "Intel", "Kingston", "Kioxia", "Lexar", "Micron", "Netac", "OCZ", "Patriot", "PNY",
+            "Samsung", "SanDisk", "Seagate", "Silicon Power", "SK hynix", "Smartbuy", "TeamGroup",
+            "Transcend", "Western Digital", "XPG", "KingSpec",
+        ),
+    ),
+    "Жёсткий диск": (
+        "жесткий диск HDD",
+        ("HGST", "Hitachi", "Samsung", "Seagate", "Toshiba", "Western Digital"),
+    ),
+    "Блок питания": (
+        "блок питания для компьютера",
+        (
+            "AeroCool", "ASUS", "be quiet!", "Chieftec", "Cooler Master", "Corsair", "Cougar",
+            "DeepCool", "Enermax", "EVGA", "ExeGate", "FSP", "Fractal Design", "Gigabyte",
+            "MSI", "Montech", "NZXT", "Phanteks", "Seasonic", "SilverStone", "Super Flower",
+            "Thermaltake", "Xilence", "Zalman",
+        ),
+    ),
+    "Охлаждение": (
+        "кулер охлаждение процессора",
+        (
+            "Alphacool", "Arctic", "ASUS", "be quiet!", "Cooler Master", "Corsair", "Cougar",
+            "DeepCool", "EKWB", "Enermax", "ID-Cooling", "Jonsbo", "Lian Li", "Noctua", "NZXT",
+            "PCCooler", "Scythe", "Thermalright", "Thermaltake", "Zalman",
+        ),
+    ),
+    "Корпус компьютера": (
+        "корпус для компьютера",
+        (
+            "AeroCool", "Antec", "ASUS", "be quiet!", "Cooler Master", "Corsair", "Cougar",
+            "DeepCool", "Fractal Design", "Jonsbo", "Lian Li", "Montech", "NZXT", "Phanteks",
+            "SilverStone", "Thermaltake", "Zalman",
+        ),
+    ),
+    "Вентилятор для корпуса": (
+        "вентилятор для корпуса",
+        ("AeroCool", "Arctic", "be quiet!", "Cooler Master", "Corsair", "Cougar", "DeepCool", "ID-Cooling", "Lian Li", "Noctua", "NZXT", "Phanteks", "Scythe", "Thermalright", "Thermaltake", "Xilence", "Zalman"),
+    ),
+    "Звуковая карта": (
+        "звуковая карта",
+        ("ASUS", "Behringer", "Creative", "ESI", "Focusrite", "M-Audio", "PreSonus", "Steinberg", "Tascam", "Universal Audio"),
+    ),
+    "Сетевая карта": (
+        "сетевая карта",
+        ("ASUS", "Broadcom", "D-Link", "Intel", "Killer", "Mellanox", "Mercusys", "Realtek", "TP-Link", "Ugreen", "Zyxel"),
+    ),
+    "Плата расширения": (
+        "контроллер плата расширения PCIe",
+        ("ASUS", "Broadcom", "Espada", "HighPoint", "Intel", "LSI", "ORICO", "QNAP", "SilverStone", "StarTech", "Ugreen"),
+    ),
+    "Оптический привод": ("DVD Blu-ray привод", ("ASUS", "Hitachi-LG", "LG", "Lite-On", "NEC", "Optiarc", "Pioneer", "Samsung")),
+    "Термопаста": ("термопаста", ("Arctic", "Cooler Master", "DeepCool", "Gelid", "Grizzly", "ID-Cooling", "Noctua", "Thermalright", "Zalman")),
+    "Кабели и переходники": ("кабель переходник для компьютера", ("Baseus", "Cablexpert", "D-Link", "Espada", "ORICO", "Rexant", "UGREEN", "Vention")),
+    "Комплектующие для ноутбука": ("комплектующие для ноутбука", ("Acer", "Apple", "ASUS", "Dell", "HP", "Huawei", "Lenovo", "MSI", "Samsung", "Xiaomi")),
+    "Серверные комплектующие": ("серверные комплектующие", ("Broadcom", "Cisco", "Dell", "Fujitsu", "HPE", "Huawei", "IBM", "Intel", "Lenovo", "LSI", "Mellanox", "Micron", "Samsung", "Seagate", "Supermicro", "Western Digital")),
+    "Ноутбук": (
+        "ноутбук",
+        (
+            "Acer", "Apple", "ASUS", "Chuwi", "Dell", "DEXP", "Dream Machines", "Gigabyte",
+            "Honor", "HP", "Huawei", "Lenovo", "Maibenben", "MSI", "Razer", "Samsung", "Thunderobot",
+            "Xiaomi",
+        ),
+    ),
+    "Монитор": (
+        "монитор",
+        (
+            "Acer", "AOC", "ASUS", "BenQ", "Dell", "Gigabyte", "HP", "Huawei", "Iiyama", "LG",
+            "MSI", "Philips", "Samsung", "ViewSonic", "Xiaomi",
+        ),
+    ),
+    "Смартфон": ("смартфон", ("Apple", "ASUS", "Google", "Honor", "Huawei", "Infinix", "Motorola", "Nokia", "Nothing", "OnePlus", "OPPO", "Realme", "Samsung", "Sony", "Tecno", "Vivo", "Xiaomi", "ZTE")),
+    "Планшет": ("планшет", ("Apple", "Blackview", "Honor", "Huawei", "Lenovo", "Microsoft", "Samsung", "Teclast", "Xiaomi")),
+    "Игровая консоль": ("игровая приставка", ("Microsoft Xbox", "Nintendo", "Sony PlayStation", "Valve Steam Deck")),
+    "Телевизор": ("телевизор", ("BBK", "Haier", "Hisense", "LG", "Philips", "Samsung", "Sony", "TCL", "Xiaomi", "Яндекс")),
+    "Наушники": ("наушники", ("Apple", "Audio-Technica", "Beyerdynamic", "Bose", "HyperX", "JBL", "Marshall", "Razer", "Sennheiser", "Sony", "SteelSeries", "Xiaomi")),
+}
+
+COMPONENT_NAMES = (
+    "Оперативная память",
+    "Процессор",
+    "Видеокарта",
+    "Материнская плата",
+    "SSD",
+    "Жёсткий диск",
+    "Блок питания",
+    "Охлаждение",
+    "Вентилятор для корпуса",
+    "Корпус компьютера",
+    "Звуковая карта",
+    "Сетевая карта",
+    "Плата расширения",
+    "Оптический привод",
+    "Термопаста",
+    "Кабели и переходники",
+    "Комплектующие для ноутбука",
+    "Серверные комплектующие",
+    "Другой товар",
+)
 
 
 @dataclass(frozen=True)
@@ -76,17 +249,21 @@ def price_from_text(value: str | None) -> int | None:
     return int(digits) if digits else None
 
 
-def load_seen() -> set[str]:
+def seen_file(profile_slot: int = 1) -> Path:
+    return APP_DIR / f".avito-seen-{profile_slot}.json"
+
+
+def load_seen(profile_slot: int = 1) -> set[str]:
     try:
-        data = json.loads(SEEN_FILE.read_text(encoding="utf-8"))
+        data = json.loads(seen_file(profile_slot).read_text(encoding="utf-8"))
         return {str(item) for item in data}
     except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
         return set()
 
 
-def save_seen(seen: set[str]) -> None:
+def save_seen(seen: set[str], profile_slot: int = 1) -> None:
     # Ограничиваем файл, чтобы многомесячный мониторинг не раздувал его бесконечно.
-    SEEN_FILE.write_text(
+    seen_file(profile_slot).write_text(
         json.dumps(sorted(seen)[-20_000:], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -153,11 +330,26 @@ def wait_for_manual_challenge(
     return False
 
 
-def system_browser() -> str | None:
-    for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"):
-        executable = shutil.which(name)
-        if executable:
-            return executable
+def system_browser(preferred: str = "Chromium") -> str | None:
+    if preferred == "Brave":
+        candidates = [
+            shutil.which("brave-browser"),
+            shutil.which("brave"),
+            str(Path(os.environ.get("LOCALAPPDATA", "")) / "BraveSoftware/Brave-Browser/Application/brave.exe"),
+            str(Path(os.environ.get("PROGRAMFILES", "")) / "BraveSoftware/Brave-Browser/Application/brave.exe"),
+            str(Path(os.environ.get("PROGRAMFILES(X86)", "")) / "BraveSoftware/Brave-Browser/Application/brave.exe"),
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        ]
+    else:
+        candidates = [
+            shutil.which("chromium"),
+            shutil.which("chromium-browser"),
+            shutil.which("google-chrome"),
+            shutil.which("google-chrome-stable"),
+        ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return candidate
     return None
 
 
@@ -241,13 +433,15 @@ class MonitorWorker:
         max_price: int | None,
         interval: int,
         visible: bool,
+        browser_name: str,
+        profile_slot: int,
         automation: AutomationSettings,
     ) -> None:
         self.stop()
         self.stop_event.clear()
         self.thread = threading.Thread(
             target=self._run,
-            args=(url, max_price, interval, visible, automation),
+            args=(url, max_price, interval, visible, browser_name, profile_slot, automation),
             daemon=True,
         )
         self.thread.start()
@@ -261,9 +455,11 @@ class MonitorWorker:
         max_price: int | None,
         interval: int,
         visible: bool,
+        browser_name: str,
+        profile_slot: int,
         automation: AutomationSettings,
     ) -> None:
-        seen = load_seen()
+        seen = load_seen(profile_slot)
         actions_done = 0
         try:
             with sync_playwright() as playwright:
@@ -272,11 +468,15 @@ class MonitorWorker:
                     "locale": "ru-RU",
                     "viewport": {"width": 1280, "height": 900},
                 }
-                executable = system_browser()
+                executable = system_browser(browser_name)
+                if browser_name == "Brave" and not executable:
+                    raise RuntimeError("Brave не найден. Установи Brave или выбери Chromium в настройках.")
                 if executable:
                     launch_options["executable_path"] = executable
+                profile_name = ".avito-brave-profile" if browser_name == "Brave" else ".avito-browser-profile"
+                profile_dir = APP_DIR / f"{profile_name}-{profile_slot}"
                 context: BrowserContext = playwright.chromium.launch_persistent_context(
-                    str(PROFILE_DIR),
+                    str(profile_dir),
                     **launch_options,
                 )
                 page = context.pages[0] if context.pages else context.new_page()
@@ -318,7 +518,7 @@ class MonitorWorker:
                                 except Exception as exc:
                                     self.emit("automation_error", f"{item.title}: {exc}")
                         seen.update(item.listing_id for item in items)
-                        save_seen(seen)
+                        save_seen(seen, profile_slot)
                         self.emit("status", f"Проверено: {len(items)}; новых: {len(fresh)}")
 
                     delay = max(MIN_INTERVAL_SECONDS, interval) + random.randint(0, 20)
@@ -485,7 +685,7 @@ class AvitoMonitorApp:
             confirm_purchase=self.auto_purchase.get(),
             max_actions=max_actions,
         )
-        self.worker.start(url, max_price, interval, self.visible_browser.get(), automation)
+        self.worker.start(url, max_price, interval, self.visible_browser.get(), "Brave", 1, automation)
 
     def stop(self) -> None:
         self.worker.stop()
@@ -551,9 +751,345 @@ class AvitoMonitorApp:
         self.root.destroy()
 
 
+class ModernAvitoMonitorApp:
+    BG = "#0f172a"
+    CARD = "#182235"
+    FIELD = "#0b1220"
+    TEXT = "#e5e7eb"
+    MUTED = "#94a3b8"
+    ACCENT = "#ff6b00"
+
+    def __init__(self, root: tk.Misc, profile_slot: int = 1) -> None:
+        self.root = root
+        self.profile_slot = profile_slot
+        self.second_window: tk.Toplevel | None = None
+        self.root.title(f"Avito Parts Hunter — монитор {profile_slot}")
+        self.root.geometry("1120x820")
+        self.root.minsize(900, 680)
+        self.root.configure(bg=self.BG)
+        self.events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.worker = MonitorWorker(self.events.put)
+        self.listing_urls: dict[str, str] = {}
+        self._configure_style()
+
+        self.city_var = tk.StringVar(value="Москва")
+        self.product_var = tk.StringVar(value="Оперативная память")
+        self.manufacturer_var = tk.StringVar(value="Любой производитель")
+        self.extra_var = tk.StringVar(value="")
+        self.price_var = tk.StringVar(value="")
+        self.interval_var = tk.StringVar(value="300")
+        self.browser_var = tk.StringVar(value="Brave")
+        self.visible_browser = tk.BooleanVar(value=True)
+        self.auto_message = tk.BooleanVar(value=False)
+        self.auto_checkout = tk.BooleanVar(value=False)
+        self.auto_purchase = tk.BooleanVar(value=False)
+        self.allow_charge = tk.BooleanVar(value=False)
+        self.message_var = tk.StringVar(
+            value="Здравствуйте! Готов купить. Пожалуйста, поставьте объявление в бронь."
+        )
+        self.max_actions_var = tk.StringVar(value="1")
+        self.preview_var = tk.StringVar()
+        self.status = tk.StringVar(value="Готов к поиску")
+
+        main = ttk.Frame(root, padding=18)
+        main.pack(fill="both", expand=True)
+        main.columnconfigure(0, weight=3)
+        main.columnconfigure(1, weight=2)
+        main.rowconfigure(3, weight=1)
+
+        header = ttk.Frame(main)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
+        ttk.Label(header, text=f"AVITO PARTS HUNTER  #{profile_slot}", style="Title.TLabel").pack(side="left")
+        ttk.Label(
+            header,
+            text="комплектующие • новые объявления • автобронь",
+            style="Muted.TLabel",
+        ).pack(side="left", padx=14, pady=(8, 0))
+
+        search = ttk.LabelFrame(main, text="  Параметры поиска  ", style="Card.TLabelframe", padding=14)
+        search.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
+        search.columnconfigure(1, weight=1)
+        search.columnconfigure(3, weight=1)
+
+        self._label(search, "Город", 0, 0)
+        self.city_box = ttk.Combobox(search, textvariable=self.city_var, values=tuple(CITIES), state="readonly")
+        self.city_box.grid(row=0, column=1, sticky="ew", padx=(8, 14), pady=5)
+
+        self._label(search, "Браузер", 0, 2)
+        self.browser_box = ttk.Combobox(
+            search, textvariable=self.browser_var, values=("Brave", "Chromium"), state="readonly", width=14
+        )
+        self.browser_box.grid(row=0, column=3, sticky="ew", padx=(8, 0), pady=5)
+
+        self._label(search, "Комплектующая", 1, 0)
+        self.product_box = ttk.Combobox(
+            search, textvariable=self.product_var, values=COMPONENT_NAMES, state="readonly"
+        )
+        self.product_box.grid(row=1, column=1, sticky="ew", padx=(8, 14), pady=5)
+        self.product_box.bind("<<ComboboxSelected>>", self.on_product_changed)
+
+        self._label(search, "Производитель", 1, 2)
+        self.manufacturer_box = ttk.Combobox(search, textvariable=self.manufacturer_var)
+        self.manufacturer_box.grid(row=1, column=3, sticky="ew", padx=(8, 0), pady=5)
+        self.manufacturer_box.bind("<<ComboboxSelected>>", self.on_manufacturer_changed)
+
+        self._label(search, "Доп. слова", 2, 0)
+        ttk.Entry(search, textvariable=self.extra_var).grid(
+            row=2, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=5
+        )
+
+        self._label(search, "Цена до, ₽", 3, 0)
+        ttk.Entry(search, textvariable=self.price_var).grid(row=3, column=1, sticky="ew", padx=(8, 14), pady=5)
+        self._label(search, "Интервал, сек", 3, 2)
+        ttk.Spinbox(search, from_=60, to=86400, increment=60, textvariable=self.interval_var).grid(
+            row=3, column=3, sticky="ew", padx=(8, 0), pady=5
+        )
+
+        ttk.Checkbutton(
+            search, text="Показывать окно Brave", variable=self.visible_browser
+        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(7, 2))
+        ttk.Label(search, textvariable=self.preview_var, style="Hint.TLabel", wraplength=620).grid(
+            row=5, column=0, columnspan=4, sticky="w", pady=(5, 0)
+        )
+
+        automation = ttk.LabelFrame(main, text="  Автобронь  ", style="Card.TLabelframe", padding=14)
+        automation.grid(row=1, column=1, sticky="nsew", padx=(8, 0))
+        automation.columnconfigure(0, weight=1)
+        ttk.Checkbutton(
+            automation, text="Написать продавцу", variable=self.auto_message
+        ).grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Entry(automation, textvariable=self.message_var).grid(row=1, column=0, sticky="ew", pady=(2, 8))
+        ttk.Checkbutton(
+            automation, text="Открыть оформление доставки", variable=self.auto_checkout
+        ).grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Checkbutton(
+            automation, text="Подтвердить заказ автоматически", variable=self.auto_purchase
+        ).grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Checkbutton(
+            automation, text="Разрешаю списание", variable=self.allow_charge
+        ).grid(row=4, column=0, sticky="w", pady=3)
+        limit_row = ttk.Frame(automation, style="Card.TFrame")
+        limit_row.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(limit_row, text="Лимит действий:", style="Card.TLabel").pack(side="left")
+        ttk.Spinbox(limit_row, from_=1, to=10, width=5, textvariable=self.max_actions_var).pack(
+            side="left", padx=8
+        )
+
+        controls = ttk.Frame(main)
+        controls.grid(row=2, column=0, columnspan=2, sticky="ew", pady=14)
+        self.start_button = ttk.Button(controls, text="▶  ЗАПУСТИТЬ ПОИСК", style="Accent.TButton", command=self.start)
+        self.start_button.pack(side="left")
+        self.stop_button = ttk.Button(controls, text="■  ОСТАНОВИТЬ", command=self.stop, state="disabled")
+        self.stop_button.pack(side="left", padx=8)
+        ttk.Button(controls, text="Очистить просмотренные", command=self.clear_seen).pack(side="left")
+        if self.profile_slot == 1:
+            ttk.Button(controls, text="＋ ВТОРОЙ МОНИТОР", command=self.open_second_monitor).pack(
+                side="right"
+            )
+
+        results_card = ttk.LabelFrame(main, text="  Найденные объявления  ", style="Card.TLabelframe", padding=10)
+        results_card.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        results_card.columnconfigure(0, weight=1)
+        results_card.rowconfigure(0, weight=1)
+        self.results = ttk.Treeview(results_card, columns=("price", "title"), show="headings", selectmode="browse")
+        self.results.heading("price", text="Цена")
+        self.results.heading("title", text="Объявление")
+        self.results.column("price", width=130, anchor="e", stretch=False)
+        self.results.column("title", width=760, anchor="w")
+        self.results.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(results_card, orient="vertical", command=self.results.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.results.configure(yscrollcommand=scrollbar.set)
+        self.results.bind("<Double-Button-1>", self.open_selected)
+
+        status_bar = ttk.Frame(main, style="Status.TFrame", padding=(10, 7))
+        status_bar.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Label(status_bar, textvariable=self.status, style="Status.TLabel").pack(side="left")
+        ttk.Label(status_bar, text="Двойной клик — открыть объявление", style="StatusMuted.TLabel").pack(side="right")
+
+        for variable in (self.city_var, self.manufacturer_var, self.extra_var, self.price_var):
+            variable.trace_add("write", lambda *_: self.update_preview())
+        self.on_product_changed()
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.root.after(150, self.process_events)
+
+    def _configure_style(self) -> None:
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("TFrame", background=self.BG)
+        style.configure("Card.TFrame", background=self.CARD)
+        style.configure("TLabel", background=self.BG, foreground=self.TEXT, font=("Segoe UI", 10))
+        style.configure("Card.TLabel", background=self.CARD, foreground=self.TEXT)
+        style.configure("Title.TLabel", background=self.BG, foreground="#ffffff", font=("Segoe UI Semibold", 20))
+        style.configure("Muted.TLabel", background=self.BG, foreground=self.MUTED, font=("Segoe UI", 10))
+        style.configure("Hint.TLabel", background=self.CARD, foreground=self.MUTED, font=("Segoe UI", 8))
+        style.configure("Card.TLabelframe", background=self.CARD, bordercolor="#334155", relief="solid")
+        style.configure("Card.TLabelframe.Label", background=self.CARD, foreground="#ffffff", font=("Segoe UI Semibold", 11))
+        style.configure("TEntry", fieldbackground=self.FIELD, foreground=self.TEXT, insertcolor=self.TEXT, bordercolor="#334155", padding=7)
+        style.configure("TCombobox", fieldbackground=self.FIELD, foreground=self.TEXT, arrowcolor=self.TEXT, padding=6)
+        style.map("TCombobox", fieldbackground=[("readonly", self.FIELD)], foreground=[("readonly", self.TEXT)])
+        style.configure("TSpinbox", fieldbackground=self.FIELD, foreground=self.TEXT, arrowcolor=self.TEXT, padding=6)
+        style.configure("TCheckbutton", background=self.CARD, foreground=self.TEXT, font=("Segoe UI", 10))
+        style.map("TCheckbutton", background=[("active", self.CARD)], foreground=[("active", "#ffffff")])
+        style.configure("TButton", background="#334155", foreground="#ffffff", padding=(13, 8), borderwidth=0)
+        style.map("TButton", background=[("active", "#475569"), ("disabled", "#1e293b")])
+        style.configure("Accent.TButton", background=self.ACCENT, foreground="#ffffff", font=("Segoe UI Semibold", 10), padding=(18, 9))
+        style.map("Accent.TButton", background=[("active", "#ff8124"), ("disabled", "#7c3b0e")])
+        style.configure("Treeview", background=self.FIELD, fieldbackground=self.FIELD, foreground=self.TEXT, rowheight=30, borderwidth=0)
+        style.configure("Treeview.Heading", background="#263449", foreground="#ffffff", font=("Segoe UI Semibold", 10), padding=7)
+        style.map("Treeview", background=[("selected", "#334e68")])
+        style.configure("Status.TFrame", background="#111c2e")
+        style.configure("Status.TLabel", background="#111c2e", foreground="#7dd3fc")
+        style.configure("StatusMuted.TLabel", background="#111c2e", foreground=self.MUTED)
+
+    @staticmethod
+    def _label(parent: ttk.Widget, text: str, row: int, column: int) -> None:
+        ttk.Label(parent, text=text, style="Card.TLabel").grid(row=row, column=column, sticky="w", pady=5)
+
+    def on_product_changed(self, _event: object = None) -> None:
+        makers = PRODUCTS[self.product_var.get()][1]
+        self.manufacturer_box.configure(values=("Любой производитель", *makers, "Другой — ввести вручную"))
+        self.manufacturer_var.set("Любой производитель")
+        self.update_preview()
+
+    def on_manufacturer_changed(self, _event: object = None) -> None:
+        if self.manufacturer_var.get() == "Другой — ввести вручную":
+            self.manufacturer_var.set("")
+            self.manufacturer_box.focus_set()
+
+    def search_url(self, max_price: int | None) -> str:
+        city = CITIES[self.city_var.get()]
+        product_query = PRODUCTS[self.product_var.get()][0]
+        manufacturer = self.manufacturer_var.get().strip()
+        parts = [product_query]
+        if manufacturer and manufacturer != "Любой производитель":
+            parts.append(manufacturer)
+        if self.extra_var.get().strip():
+            parts.append(self.extra_var.get().strip())
+        query = " ".join(part for part in parts if part)
+        if not query:
+            raise ValueError("Для «Другого товара» укажи название в поле «Доп. слова»")
+        base = f"https://www.avito.ru/{city}/tovary_dlya_kompyutera"
+        return build_search_url(base, query, max_price)
+
+    def update_preview(self) -> None:
+        try:
+            price = int(self.price_var.get()) if self.price_var.get().strip().isdigit() else None
+            product = PRODUCTS[self.product_var.get()][0]
+            manufacturer = self.manufacturer_var.get().strip()
+            query = " ".join(
+                value for value in (product, manufacturer if manufacturer != "Любой производитель" else "", self.extra_var.get().strip()) if value
+            )
+            self.preview_var.set(f"Запрос: {query or 'укажи название товара'}" + (f"  •  до {price:,} ₽".replace(",", " ") if price else ""))
+        except (KeyError, ValueError):
+            self.preview_var.set("Заполни параметры поиска")
+
+    def start(self) -> None:
+        try:
+            max_price = int(self.price_var.get()) if self.price_var.get().strip() else None
+            interval = int(self.interval_var.get())
+            max_actions = int(self.max_actions_var.get())
+            url = self.search_url(max_price)
+            if max_price is not None and max_price <= 0:
+                raise ValueError("Максимальная цена должна быть больше нуля")
+            if interval < MIN_INTERVAL_SECONDS:
+                raise ValueError(f"Минимальный интервал — {MIN_INTERVAL_SECONDS} секунд")
+            if not 1 <= max_actions <= 10:
+                raise ValueError("Лимит действий должен быть от 1 до 10")
+            if self.auto_message.get() and not self.message_var.get().strip():
+                raise ValueError("Укажи текст сообщения продавцу")
+            if self.auto_purchase.get() and not self.auto_checkout.get():
+                raise ValueError("Для автозаказа включи оформление доставки")
+            if self.auto_purchase.get() and not self.allow_charge.get():
+                raise ValueError("Подтверди разрешение списания")
+            if (self.auto_message.get() or self.auto_checkout.get()) and not self.visible_browser.get():
+                raise ValueError("Для автоброни оставь окно Brave включённым")
+        except ValueError as exc:
+            messagebox.showerror("Проверь параметры", str(exc))
+            return
+
+        automation = AutomationSettings(
+            send_message=self.auto_message.get(),
+            message_text=self.message_var.get().strip(),
+            open_checkout=self.auto_checkout.get(),
+            confirm_purchase=self.auto_purchase.get(),
+            max_actions=max_actions,
+        )
+        self.start_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.worker.start(
+            url,
+            max_price,
+            interval,
+            self.visible_browser.get(),
+            self.browser_var.get(),
+            self.profile_slot,
+            automation,
+        )
+
+    def open_second_monitor(self) -> None:
+        if self.second_window is not None and self.second_window.winfo_exists():
+            self.second_window.deiconify()
+            self.second_window.lift()
+            return
+        self.second_window = tk.Toplevel(self.root)
+        ModernAvitoMonitorApp(self.second_window, profile_slot=2)
+
+    def stop(self) -> None:
+        self.worker.stop()
+        self.status.set("Останавливаю монитор…")
+
+    def clear_seen(self) -> None:
+        try:
+            seen_file(self.profile_slot).unlink(missing_ok=True)
+            self.status.set("История просмотренных очищена")
+        except OSError as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def open_selected(self, _event: object = None) -> None:
+        item_id = self.results.focus()
+        if item_id and item_id in self.listing_urls:
+            webbrowser.open(self.listing_urls[item_id])
+
+    def process_events(self) -> None:
+        while True:
+            try:
+                event, payload = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if event == "listing":
+                item = payload
+                assert isinstance(item, Listing)
+                row_id = self.results.insert("", 0, values=(item.display_price, item.title))
+                self.listing_urls[row_id] = item.url
+                self.root.bell()
+            elif event in {"status", "automation"}:
+                self.status.set(str(payload))
+            elif event == "automation_error":
+                self.status.set("Автобронь требует внимания")
+                messagebox.showwarning("Автобронь не выполнена", str(payload))
+            elif event == "error":
+                self.status.set("Монитор остановлен с ошибкой")
+                messagebox.showerror("Монитор остановлен", str(payload))
+            elif event == "challenge":
+                self.status.set("Пройди проверку в Brave")
+                messagebox.showinfo(
+                    "Нужна проверка Avito",
+                    "Пройди проверку в открытом Brave. Монитор продолжит работу автоматически.",
+                )
+            elif event == "stopped":
+                self.start_button.configure(state="normal")
+                self.stop_button.configure(state="disabled")
+        self.root.after(150, self.process_events)
+
+    def close(self) -> None:
+        self.worker.stop()
+        self.root.destroy()
+
+
 def main() -> None:
     root = tk.Tk()
-    AvitoMonitorApp(root)
+    ModernAvitoMonitorApp(root)
     root.mainloop()
 
 

@@ -16,8 +16,12 @@ if not defined PYTHON_CMD goto :error
 if not exist ".venv\Scripts\python.exe" (
     echo First launch: preparing the application...
     %PYTHON_CMD% -m venv .venv || goto :error
+)
+
+if not exist ".venv\.avito-ready" (
+    echo Installing required Python packages...
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt || goto :error
-    ".venv\Scripts\python.exe" -m playwright install chromium || goto :error
+    type nul > ".venv\.avito-ready"
 )
 
 ".venv\Scripts\python.exe" avito_monitor.py
