@@ -1,0 +1,6 @@
+.venv/
+.avito-browser-profile/
+.avito-seen.json
+__pycache__/
+.pytest_cache/
+.pw-browsers/
