@@ -25,6 +25,7 @@ PROFILE_DIR = APP_DIR / ".avito-browser-profile"
 SEEN_FILE = APP_DIR / ".avito-seen.json"
 MIN_INTERVAL_SECONDS = 60
 CHALLENGE_WAIT_SECONDS = 600
+CARD_SELECTOR = '[data-marker="item"], [data-item-id]'
 
 CITIES = {
     "Вся Россия": "rossiya",
@@ -198,6 +199,67 @@ COMPONENT_NAMES = (
     "Другой товар",
 )
 
+PRODUCT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "Оперативная память": ("оператив", "озу", " ram", "ddr", "dimm", "sodimm"),
+    "Процессор": ("процессор", " cpu", "ryzen", "xeon", "core i", "athlon", "celeron", "pentium", "epyc", "threadripper"),
+    "Видеокарта": ("видеокарт", " gpu", "geforce", "radeon", " rtx", " gtx", "quadro", "intel arc"),
+    "Материнская плата": ("материн", "motherboard", "mainboard"),
+    "SSD": (" ssd", "ssd ", "nvme", "m.2", "твердотель"),
+    "Жёсткий диск": ("жестк", "жёстк", " hdd", "hdd "),
+    "Блок питания": ("блок питания", " psu", "ватт", " watt", "w gold", "w bronze"),
+    "Охлаждение": ("кулер", "охлажден", "водян", "радиатор", " aio"),
+    "Вентилятор для корпуса": ("вентилятор", "вертушк", " fan"),
+    "Корпус компьютера": ("корпус", "case ", "computer case"),
+    "Звуковая карта": ("звуков", "audio interface", "цап", " dac"),
+    "Сетевая карта": ("сетев", "ethernet", " wi-fi", "wifi", "lan карт"),
+    "Плата расширения": ("контроллер", "плата расширения", "pcie", "pci-e"),
+    "Оптический привод": ("dvd", "blu-ray", "bluray", "оптический привод"),
+    "Термопаста": ("термопаст", "thermal paste", "термоинтерфейс"),
+    "Кабели и переходники": ("кабель", "переходник", "адаптер"),
+    "Комплектующие для ноутбука": ("для ноутбука", "ноутбуч", "laptop"),
+    "Серверные комплектующие": ("сервер", "server", "sas", "raid", "ecc reg"),
+}
+
+MANUFACTURER_ALIASES: dict[str, tuple[str, ...]] = {
+    "AMD": ("amd", "ryzen", "radeon", "athlon", "epyc", "threadripper"),
+    "Intel": ("intel", "core i", "xeon", "pentium", "celeron", "intel arc"),
+    "NVIDIA": ("nvidia", "geforce", "rtx", "gtx", "quadro"),
+    "Western Digital": ("western digital", " wd"),
+    "SK hynix": ("sk hynix", "hynix"),
+    "Hynix": ("hynix",),
+    "be quiet!": ("be quiet",),
+    "Microsoft Xbox": ("xbox",),
+    "Sony PlayStation": ("playstation", "ps4", "ps5"),
+}
+
+IRRELEVANT_PHRASES = (
+    "куплю ",
+    "ищу ",
+    "коробка от",
+    "упаковка от",
+    "муляж",
+    "ремонт видеокарт",
+    "ремонт компьютеров",
+    "услуги ремонта",
+)
+
+SMART_PRODUCT_ALIASES: dict[str, tuple[str, ...]] = {
+    "Оперативная память": ("оперативная память", "оперативка", "озу", "ram"),
+    "Процессор": ("процессор", "проц", "cpu"),
+    "Видеокарта": ("видеокарта", "видюха", "видео карта", "gpu"),
+    "Материнская плата": ("материнская плата", "материнка", "мать", "motherboard"),
+    "SSD": ("ssd", "ссд", "nvme"),
+    "Жёсткий диск": ("жесткий диск", "жёсткий диск", "hdd", "винчестер"),
+    "Блок питания": ("блок питания", "бп", "psu"),
+    "Охлаждение": ("охлаждение", "кулер", "водянка", "сжо", "aio"),
+    "Вентилятор для корпуса": ("корпусной вентилятор", "вентилятор", "вертушка"),
+    "Корпус компьютера": ("корпус компьютера", "корпус пк", "computer case"),
+    "Звуковая карта": ("звуковая карта", "цап", "dac"),
+    "Сетевая карта": ("сетевая карта", "wifi карта", "wi-fi карта"),
+    "Плата расширения": ("плата расширения", "pcie контроллер", "pci-e контроллер"),
+    "Термопаста": ("термопаста", "термоинтерфейс"),
+}
+
 
 @dataclass(frozen=True)
 class Listing:
@@ -249,6 +311,91 @@ def price_from_text(value: str | None) -> int | None:
     return int(digits) if digits else None
 
 
+def normalize_search_text(value: str) -> str:
+    text = value.casefold().replace("ё", "е").replace("×", "x").replace("х", "x").replace("*", "x")
+    text = re.sub(r"(\d+)\s*x\s*(\d+)", r"\1x\2", text)
+    text = re.sub(r"(\d+)\s*(?:гб|gb|gbyte|гигабайт(?:а|ов)?)\b", r"\1gb", text)
+    text = re.sub(r"(\d+)\s*(?:тб|tb|tbyte|терабайт(?:а|ов)?)\b", r"\1tb", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def detect_smart_query(value: str) -> tuple[str, str, str]:
+    normalized = normalize_search_text(value)
+    detected_product = "Другой товар"
+    matched_alias = ""
+    for product, aliases in SMART_PRODUCT_ALIASES.items():
+        for alias in sorted(aliases, key=len, reverse=True):
+            if normalize_search_text(alias) in normalized:
+                detected_product = product
+                matched_alias = normalize_search_text(alias)
+                break
+        if matched_alias:
+            break
+
+    detected_manufacturer = "Любой производитель"
+    if detected_product in PRODUCTS:
+        for maker in sorted(PRODUCTS[detected_product][1], key=len, reverse=True):
+            aliases = MANUFACTURER_ALIASES.get(maker, (maker.casefold(),))
+            if any(normalize_search_text(alias) in normalized for alias in aliases):
+                detected_manufacturer = maker
+                break
+
+    remaining = normalized
+    if matched_alias:
+        remaining = remaining.replace(matched_alias, " ", 1)
+    if detected_manufacturer != "Любой производитель":
+        aliases = MANUFACTURER_ALIASES.get(detected_manufacturer, (detected_manufacturer.casefold(),))
+        for alias in sorted(aliases, key=len, reverse=True):
+            normalized_alias = normalize_search_text(alias)
+            if normalized_alias in remaining:
+                remaining = remaining.replace(normalized_alias, " ", 1)
+                break
+    remaining = re.sub(r"\s+", " ", remaining).strip(" ,;-")
+    return detected_product, detected_manufacturer, remaining
+
+
+def required_specs(value: str) -> tuple[str, ...]:
+    normalized = normalize_search_text(value)
+    specs = re.findall(r"\b\d+x\d+(?:gb)?\b|\b\d+(?:gb|tb)\b|\bddr\d\b|\b(?:rtx|gtx|rx)\s*\d+\w*\b|\b\d{3,4}w\b", normalized)
+    return tuple(spec.replace(" ", "") for spec in specs)
+
+
+def listing_is_relevant(
+    listing: Listing,
+    product_name: str,
+    manufacturer: str,
+    extra_query: str,
+) -> bool:
+    title = normalize_search_text(listing.title)
+    if any(normalize_search_text(phrase) in title for phrase in IRRELEVANT_PHRASES):
+        return False
+
+    if product_name != "Другой товар":
+        keywords = tuple(normalize_search_text(word) for word in PRODUCT_KEYWORDS.get(product_name, ()))
+        if keywords and not any(word in f" {title}" for word in keywords):
+            return False
+
+    if manufacturer and manufacturer != "Любой производитель":
+        aliases = MANUFACTURER_ALIASES.get(manufacturer, (manufacturer.casefold(),))
+        if not any(normalize_search_text(alias) in f" {title}" for alias in aliases):
+            return False
+
+    compact_title = title.replace(" ", "")
+    if any(spec not in compact_title for spec in required_specs(extra_query)):
+        return False
+    return True
+
+
+def page_url(search_url: str, page_number: int) -> str:
+    parsed = urlparse(search_url)
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if page_number > 1:
+        params["p"] = str(page_number)
+    else:
+        params.pop("p", None)
+    return urlunparse(parsed._replace(query=urlencode(params)))
+
+
 def seen_file(profile_slot: int = 1) -> Path:
     return APP_DIR / f".avito-seen-{profile_slot}.json"
 
@@ -270,13 +417,19 @@ def save_seen(seen: set[str], profile_slot: int = 1) -> None:
 
 
 def extract_listings(page: Page) -> list[Listing]:
-    cards = page.locator('[data-marker="item"]')
+    cards = page.locator(CARD_SELECTOR)
     raw_items = cards.evaluate_all(
         """
         cards => cards.map(card => {
-          const link = card.querySelector('[data-marker="item-title"], a[itemprop="url"], a[href*="/items/"]');
-          const titleNode = card.querySelector('[data-marker="item-title"], [itemprop="name"]');
-          const priceNode = card.querySelector('[itemprop="price"], [data-marker="item-price"]');
+          const link = card.querySelector(
+            'a[data-marker="item-title"], [data-marker="item-title"] a, a[itemprop="url"], h3 a, h2 a'
+          );
+          const titleNode = card.querySelector(
+            '[data-marker="item-title"], [itemprop="name"], h3, h2'
+          );
+          const priceNode = card.querySelector(
+            'meta[itemprop="price"], [itemprop="price"], [data-marker="item-price"], [class*="price"]'
+          );
           const href = link ? link.href : '';
           return {
             id: card.getAttribute('data-item-id') || href,
@@ -288,10 +441,15 @@ def extract_listings(page: Page) -> list[Listing]:
         """
     )
     listings: list[Listing] = []
+    found_ids: set[str] = set()
     for item in raw_items:
+        listing_id = str(item["id"])
+        if listing_id in found_ids:
+            continue
+        found_ids.add(listing_id)
         listings.append(
             Listing(
-                listing_id=str(item["id"]),
+                listing_id=listing_id,
                 title=str(item["title"]),
                 price=price_from_text(str(item.get("price", ""))),
                 url=str(item["url"]),
@@ -323,7 +481,7 @@ def wait_for_manual_challenge(
     emit("challenge", None)
     deadline = time.monotonic() + CHALLENGE_WAIT_SECONDS
     while time.monotonic() < deadline and not stop_event.is_set():
-        if page.locator('[data-marker="item"]').count() > 0 and not page_has_challenge(page):
+        if page.locator(CARD_SELECTOR).count() > 0 and not page_has_challenge(page):
             emit("status", "Проверка пройдена, продолжаю мониторинг…")
             return True
         stop_event.wait(2)
@@ -351,6 +509,11 @@ def system_browser(preferred: str = "Chromium") -> str | None:
         if candidate and Path(candidate).is_file():
             return candidate
     return None
+
+
+def browser_profile_dir(browser_name: str, profile_slot: int) -> Path:
+    profile_name = ".avito-brave-profile" if browser_name == "Brave" else ".avito-browser-profile"
+    return APP_DIR / f"{profile_name}-{profile_slot}"
 
 
 def click_named_control(page: Page, names: tuple[str, ...]) -> bool:
@@ -421,6 +584,29 @@ def automate_listing(
         page.close()
 
 
+def load_results_page(
+    page: Page,
+    url: str,
+    visible: bool,
+    stop_event: threading.Event,
+    emit: Callable[[str, object], None],
+) -> list[Listing]:
+    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    try:
+        page.locator(CARD_SELECTOR).first.wait_for(timeout=20_000)
+    except Exception:
+        if page_has_challenge(page):
+            if not visible:
+                raise RuntimeError(
+                    "Avito запросил проверку. Включи «Показывать браузер» и запусти монитор снова."
+                )
+            if not wait_for_manual_challenge(page, stop_event, emit):
+                if stop_event.is_set():
+                    return []
+                raise RuntimeError("Проверка Avito не пройдена за 10 минут.")
+    return extract_listings(page)
+
+
 class MonitorWorker:
     def __init__(self, emit: Callable[[str, object], None]) -> None:
         self.emit = emit
@@ -432,6 +618,11 @@ class MonitorWorker:
         url: str,
         max_price: int | None,
         interval: int,
+        max_pages: int,
+        product_name: str,
+        manufacturer: str,
+        extra_query: str,
+        smart_filter: bool,
         visible: bool,
         browser_name: str,
         profile_slot: int,
@@ -441,7 +632,10 @@ class MonitorWorker:
         self.stop_event.clear()
         self.thread = threading.Thread(
             target=self._run,
-            args=(url, max_price, interval, visible, browser_name, profile_slot, automation),
+            args=(
+                url, max_price, interval, max_pages, product_name, manufacturer, extra_query,
+                smart_filter, visible, browser_name, profile_slot, automation,
+            ),
             daemon=True,
         )
         self.thread.start()
@@ -454,6 +648,11 @@ class MonitorWorker:
         url: str,
         max_price: int | None,
         interval: int,
+        max_pages: int,
+        product_name: str,
+        manufacturer: str,
+        extra_query: str,
+        smart_filter: bool,
         visible: bool,
         browser_name: str,
         profile_slot: int,
@@ -461,6 +660,7 @@ class MonitorWorker:
     ) -> None:
         seen = load_seen(profile_slot)
         actions_done = 0
+        first_scan = True
         try:
             with sync_playwright() as playwright:
                 launch_options: dict[str, object] = {
@@ -473,41 +673,53 @@ class MonitorWorker:
                     raise RuntimeError("Brave не найден. Установи Brave или выбери Chromium в настройках.")
                 if executable:
                     launch_options["executable_path"] = executable
-                profile_name = ".avito-brave-profile" if browser_name == "Brave" else ".avito-browser-profile"
-                profile_dir = APP_DIR / f"{profile_name}-{profile_slot}"
+                profile_dir = browser_profile_dir(browser_name, profile_slot)
                 context: BrowserContext = playwright.chromium.launch_persistent_context(
                     str(profile_dir),
                     **launch_options,
                 )
                 page = context.pages[0] if context.pages else context.new_page()
                 while not self.stop_event.is_set():
-                    self.emit("status", "Проверяю Avito…")
-                    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-                    try:
-                        page.locator('[data-marker="item"]').first.wait_for(timeout=20_000)
-                    except Exception:
-                        if page_has_challenge(page):
-                            if not visible:
-                                raise RuntimeError(
-                                    "Avito запросил проверку. Включи «Показывать браузер» и запусти монитор снова."
-                                )
-                            if not wait_for_manual_challenge(page, self.stop_event, self.emit):
-                                if self.stop_event.is_set():
-                                    break
-                                raise RuntimeError("Проверка Avito не пройдена за 10 минут.")
-                    items = extract_listings(page)
+                    items: list[Listing] = []
+                    collected_ids: set[str] = set()
+                    for page_number in range(1, max_pages + 1):
+                        if self.stop_event.is_set():
+                            break
+                        self.emit("status", f"Проверяю страницу {page_number} из {max_pages}…")
+                        page_items = load_results_page(
+                            page,
+                            page_url(url, page_number),
+                            visible,
+                            self.stop_event,
+                            self.emit,
+                        )
+                        if not page_items:
+                            break
+                        for item in page_items:
+                            if item.listing_id not in collected_ids:
+                                collected_ids.add(item.listing_id)
+                                items.append(item)
+                        if page_number < max_pages and self.stop_event.wait(random.uniform(1.0, 2.5)):
+                            break
+                    if self.stop_event.is_set():
+                        break
                     if not items:
                         self.emit("status", "Объявления не найдены; возможно, Avito изменил страницу или показал проверку.")
                     else:
-                        fresh = [
+                        matching = [
                             item
                             for item in items
-                            if item.listing_id not in seen
-                            and (max_price is None or (item.price is not None and item.price <= max_price))
+                            if max_price is None or item.price is None or item.price <= max_price
+                            if not smart_filter
+                            or listing_is_relevant(item, product_name, manufacturer, extra_query)
                         ]
-                        for item in reversed(fresh):
+                        fresh = [item for item in matching if item.listing_id not in seen]
+                        shown = matching if first_scan else fresh
+                        for item in reversed(shown):
                             self.emit("listing", item)
                         for item in fresh:
+                            if max_price is not None and item.price is None:
+                                continue
                             wants_action = automation.send_message or automation.open_checkout
                             if wants_action and actions_done < automation.max_actions:
                                 # Считаем попытку сразу, чтобы не дублировать сообщения
@@ -519,7 +731,12 @@ class MonitorWorker:
                                     self.emit("automation_error", f"{item.title}: {exc}")
                         seen.update(item.listing_id for item in items)
                         save_seen(seen, profile_slot)
-                        self.emit("status", f"Проверено: {len(items)}; новых: {len(fresh)}")
+                        self.emit(
+                            "status",
+                            f"Подходящих: {len(matching)} • проверено: {len(items)} • "
+                            f"отсеяно: {len(items) - len(matching)} • новых: {len(fresh)}",
+                        )
+                        first_scan = False
 
                     delay = max(MIN_INTERVAL_SECONDS, interval) + random.randint(0, 20)
                     if self.stop_event.wait(delay):
@@ -539,6 +756,8 @@ class AvitoMonitorApp:
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker = MonitorWorker(self.events.put)
         self.listing_urls: dict[str, str] = {}
+        self.login_active = False
+        self.auto_opened_results = False
 
         menu = tk.Menu(root)
         actions_menu = tk.Menu(menu, tearoff=False)
@@ -685,7 +904,10 @@ class AvitoMonitorApp:
             confirm_purchase=self.auto_purchase.get(),
             max_actions=max_actions,
         )
-        self.worker.start(url, max_price, interval, self.visible_browser.get(), "Brave", 1, automation)
+        self.worker.start(
+            url, max_price, interval, 1, "Другой товар", "Любой производитель", "", False,
+            self.visible_browser.get(), "Brave", 1, automation,
+        )
 
     def stop(self) -> None:
         self.worker.stop()
@@ -770,14 +992,19 @@ class ModernAvitoMonitorApp:
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker = MonitorWorker(self.events.put)
         self.listing_urls: dict[str, str] = {}
+        self.login_active = False
+        self.auto_opened_results = False
         self._configure_style()
 
         self.city_var = tk.StringVar(value="Москва")
+        self.smart_query_var = tk.StringVar(value="оперативка 2x16 32gb")
         self.product_var = tk.StringVar(value="Оперативная память")
         self.manufacturer_var = tk.StringVar(value="Любой производитель")
         self.extra_var = tk.StringVar(value="")
         self.price_var = tk.StringVar(value="")
         self.interval_var = tk.StringVar(value="300")
+        self.pages_var = tk.StringVar(value="3")
+        self.smart_filter_var = tk.BooleanVar(value=True)
         self.browser_var = tk.StringVar(value="Brave")
         self.visible_browser = tk.BooleanVar(value=True)
         self.auto_message = tk.BooleanVar(value=False)
@@ -791,69 +1018,131 @@ class ModernAvitoMonitorApp:
         self.preview_var = tk.StringVar()
         self.status = tk.StringVar(value="Готов к поиску")
 
-        main = ttk.Frame(root, padding=18)
-        main.pack(fill="both", expand=True)
-        main.columnconfigure(0, weight=3)
-        main.columnconfigure(1, weight=2)
-        main.rowconfigure(3, weight=1)
+        shell = ttk.Frame(root)
+        shell.pack(fill="both", expand=True)
 
-        header = ttk.Frame(main)
-        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
-        ttk.Label(header, text=f"AVITO PARTS HUNTER  #{profile_slot}", style="Title.TLabel").pack(side="left")
-        ttk.Label(
-            header,
-            text="комплектующие • новые объявления • автобронь",
-            style="Muted.TLabel",
-        ).pack(side="left", padx=14, pady=(8, 0))
+        sidebar = ttk.Frame(shell, style="Sidebar.TFrame", width=190, padding=(10, 18))
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+        ttk.Label(sidebar, text="PARTS\nHUNTER", style="SidebarTitle.TLabel").pack(anchor="w", padx=8, pady=(0, 22))
+        ttk.Label(sidebar, text=f"МОНИТОР #{profile_slot}", style="SidebarMuted.TLabel").pack(
+            anchor="w", padx=8, pady=(0, 10)
+        )
 
-        search = ttk.LabelFrame(main, text="  Параметры поиска  ", style="Card.TLabelframe", padding=14)
-        search.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
+        content = ttk.Frame(shell, padding=(18, 14))
+        content.pack(side="left", fill="both", expand=True)
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        self.page_title_var = tk.StringVar(value="Умный поиск")
+        header = ttk.Frame(content)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(header, textvariable=self.page_title_var, style="Title.TLabel").pack(side="left")
+        ttk.Label(header, text="Avito • комплектующие", style="Muted.TLabel").pack(
+            side="left", padx=14, pady=(8, 0)
+        )
+
+        self.pages: dict[str, ttk.Frame] = {}
+        for page_name in ("search", "automation", "results", "account"):
+            page_frame = ttk.Frame(content)
+            page_frame.grid(row=1, column=0, sticky="nsew")
+            page_frame.columnconfigure(0, weight=1)
+            page_frame.rowconfigure(0, weight=1)
+            self.pages[page_name] = page_frame
+
+        self.nav_buttons: dict[str, ttk.Button] = {}
+        nav_items = (
+            ("search", "⌕  Умный поиск", "Умный поиск"),
+            ("automation", "⚡  Автобронь", "Автобронь"),
+            ("results", "▤  Объявления", "Найденные объявления"),
+            ("account", "●  Аккаунт Avito", "Аккаунт Avito"),
+        )
+        for key, label, title in nav_items:
+            button = ttk.Button(
+                sidebar,
+                text=label,
+                style="Sidebar.TButton",
+                command=lambda k=key, t=title: self.show_page(k, t),
+            )
+            button.pack(fill="x", pady=3)
+            self.nav_buttons[key] = button
+        if self.profile_slot == 1:
+            ttk.Button(
+                sidebar,
+                text="＋  Второе окно",
+                style="Sidebar.TButton",
+                command=self.open_second_monitor,
+            ).pack(side="bottom", fill="x", pady=3)
+
+        search = ttk.LabelFrame(
+            self.pages["search"], text="  Настройка поиска  ", style="Card.TLabelframe", padding=18
+        )
+        search.grid(row=0, column=0, sticky="nsew")
         search.columnconfigure(1, weight=1)
         search.columnconfigure(3, weight=1)
 
-        self._label(search, "Город", 0, 0)
-        self.city_box = ttk.Combobox(search, textvariable=self.city_var, values=tuple(CITIES), state="readonly")
-        self.city_box.grid(row=0, column=1, sticky="ew", padx=(8, 14), pady=5)
+        self._label(search, "Умный запрос", 0, 0)
+        smart_entry = ttk.Entry(search, textvariable=self.smart_query_var)
+        smart_entry.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(8, 8), pady=5)
+        smart_entry.bind("<Return>", self.apply_smart_query)
+        ttk.Button(search, text="Распознать", style="Accent.TButton", command=self.apply_smart_query).grid(
+            row=0, column=3, sticky="ew", pady=5
+        )
 
-        self._label(search, "Браузер", 0, 2)
+        self._label(search, "Город", 1, 0)
+        self.city_box = ttk.Combobox(search, textvariable=self.city_var, values=tuple(CITIES), state="readonly")
+        self.city_box.grid(row=1, column=1, sticky="ew", padx=(8, 14), pady=5)
+
+        self._label(search, "Браузер", 1, 2)
         self.browser_box = ttk.Combobox(
             search, textvariable=self.browser_var, values=("Brave", "Chromium"), state="readonly", width=14
         )
-        self.browser_box.grid(row=0, column=3, sticky="ew", padx=(8, 0), pady=5)
+        self.browser_box.grid(row=1, column=3, sticky="ew", padx=(8, 0), pady=5)
 
-        self._label(search, "Комплектующая", 1, 0)
+        self._label(search, "Комплектующая", 2, 0)
         self.product_box = ttk.Combobox(
             search, textvariable=self.product_var, values=COMPONENT_NAMES, state="readonly"
         )
-        self.product_box.grid(row=1, column=1, sticky="ew", padx=(8, 14), pady=5)
+        self.product_box.grid(row=2, column=1, sticky="ew", padx=(8, 14), pady=5)
         self.product_box.bind("<<ComboboxSelected>>", self.on_product_changed)
 
-        self._label(search, "Производитель", 1, 2)
+        self._label(search, "Производитель", 2, 2)
         self.manufacturer_box = ttk.Combobox(search, textvariable=self.manufacturer_var)
-        self.manufacturer_box.grid(row=1, column=3, sticky="ew", padx=(8, 0), pady=5)
+        self.manufacturer_box.grid(row=2, column=3, sticky="ew", padx=(8, 0), pady=5)
         self.manufacturer_box.bind("<<ComboboxSelected>>", self.on_manufacturer_changed)
 
-        self._label(search, "Доп. слова", 2, 0)
+        self._label(search, "Характеристики", 3, 0)
         ttk.Entry(search, textvariable=self.extra_var).grid(
-            row=2, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=5
+            row=3, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=5
         )
 
-        self._label(search, "Цена до, ₽", 3, 0)
-        ttk.Entry(search, textvariable=self.price_var).grid(row=3, column=1, sticky="ew", padx=(8, 14), pady=5)
-        self._label(search, "Интервал, сек", 3, 2)
+        self._label(search, "Цена до, ₽", 4, 0)
+        ttk.Entry(search, textvariable=self.price_var).grid(row=4, column=1, sticky="ew", padx=(8, 14), pady=5)
+        self._label(search, "Интервал, сек", 4, 2)
         ttk.Spinbox(search, from_=60, to=86400, increment=60, textvariable=self.interval_var).grid(
-            row=3, column=3, sticky="ew", padx=(8, 0), pady=5
+            row=4, column=3, sticky="ew", padx=(8, 0), pady=5
         )
+
+        self._label(search, "Страниц за цикл", 5, 0)
+        ttk.Spinbox(search, from_=1, to=20, textvariable=self.pages_var).grid(
+            row=5, column=1, sticky="ew", padx=(8, 14), pady=5
+        )
+        ttk.Checkbutton(
+            search, text="Отсекать неподходящие объявления", variable=self.smart_filter_var
+        ).grid(row=5, column=2, columnspan=2, sticky="w", pady=5)
 
         ttk.Checkbutton(
             search, text="Показывать окно Brave", variable=self.visible_browser
-        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(7, 2))
+        ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(7, 2))
         ttk.Label(search, textvariable=self.preview_var, style="Hint.TLabel", wraplength=620).grid(
-            row=5, column=0, columnspan=4, sticky="w", pady=(5, 0)
+            row=7, column=0, columnspan=4, sticky="w", pady=(5, 0)
         )
 
-        automation = ttk.LabelFrame(main, text="  Автобронь  ", style="Card.TLabelframe", padding=14)
-        automation.grid(row=1, column=1, sticky="nsew", padx=(8, 0))
+        automation = ttk.LabelFrame(
+            self.pages["automation"], text="  Действия с подходящими объявлениями  ",
+            style="Card.TLabelframe", padding=18,
+        )
+        automation.grid(row=0, column=0, sticky="nsew")
         automation.columnconfigure(0, weight=1)
         ttk.Checkbutton(
             automation, text="Написать продавцу", variable=self.auto_message
@@ -875,8 +1164,8 @@ class ModernAvitoMonitorApp:
             side="left", padx=8
         )
 
-        controls = ttk.Frame(main)
-        controls.grid(row=2, column=0, columnspan=2, sticky="ew", pady=14)
+        controls = ttk.Frame(search, style="Card.TFrame")
+        controls.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(18, 0))
         controls.columnconfigure(4, weight=1)
         self.start_button = ttk.Button(
             controls, text="▶  Старт", style="Accent.TButton", command=self.start
@@ -889,13 +1178,10 @@ class ModernAvitoMonitorApp:
         ttk.Button(controls, text="Очистить историю", command=self.clear_seen).grid(
             row=0, column=2, padx=(0, 7)
         )
-        if self.profile_slot == 1:
-            ttk.Button(controls, text="＋ Второе окно", command=self.open_second_monitor).grid(
-                row=0, column=5, sticky="e"
-            )
-
-        results_card = ttk.LabelFrame(main, text="  Найденные объявления  ", style="Card.TLabelframe", padding=10)
-        results_card.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        results_card = ttk.LabelFrame(
+            self.pages["results"], text="  Подходящие объявления  ", style="Card.TLabelframe", padding=10
+        )
+        results_card.grid(row=0, column=0, sticky="nsew")
         results_card.columnconfigure(0, weight=1)
         results_card.rowconfigure(0, weight=1)
         self.results = ttk.Treeview(results_card, columns=("price", "title"), show="headings", selectmode="browse")
@@ -909,14 +1195,37 @@ class ModernAvitoMonitorApp:
         self.results.configure(yscrollcommand=scrollbar.set)
         self.results.bind("<Double-Button-1>", self.open_selected)
 
-        status_bar = ttk.Frame(main, style="Status.TFrame", padding=(10, 7))
-        status_bar.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        account = ttk.LabelFrame(
+            self.pages["account"], text="  Сохранённый вход  ", style="Card.TLabelframe", padding=22
+        )
+        account.grid(row=0, column=0, sticky="nsew")
+        account.columnconfigure(0, weight=1)
+        ttk.Label(
+            account,
+            text="Открой Brave, войди в аккаунт Avito и закрой окно браузера.\n"
+                 "Сессия сохранится локально для этого монитора.",
+            style="Card.TLabel",
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 18))
+        self.login_button = ttk.Button(
+            account, text="Войти в Avito через Brave", style="Accent.TButton", command=self.open_login
+        )
+        self.login_button.grid(row=1, column=0, sticky="w")
+        ttk.Label(
+            account,
+            text="Пароль не сохраняется в скрипте. Мониторы #1 и #2 используют отдельные профили.",
+            style="Hint.TLabel",
+        ).grid(row=2, column=0, sticky="w", pady=(14, 0))
+
+        status_bar = ttk.Frame(content, style="Status.TFrame", padding=(10, 7))
+        status_bar.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         ttk.Label(status_bar, textvariable=self.status, style="Status.TLabel").pack(side="left")
         ttk.Label(status_bar, text="Двойной клик — открыть объявление", style="StatusMuted.TLabel").pack(side="right")
 
         for variable in (self.city_var, self.manufacturer_var, self.extra_var, self.price_var):
             variable.trace_add("write", lambda *_: self.update_preview())
         self.on_product_changed()
+        self.show_page("search", "Умный поиск")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(150, self.process_events)
 
@@ -925,6 +1234,25 @@ class ModernAvitoMonitorApp:
         style.theme_use("clam")
         style.configure("TFrame", background=self.BG)
         style.configure("Card.TFrame", background=self.CARD)
+        style.configure("Sidebar.TFrame", background="#0a101b")
+        style.configure(
+            "SidebarTitle.TLabel", background="#0a101b", foreground="#ffffff",
+            font=("Segoe UI Semibold", 16),
+        )
+        style.configure(
+            "SidebarMuted.TLabel", background="#0a101b", foreground="#64748b",
+            font=("Segoe UI Semibold", 8),
+        )
+        style.configure(
+            "Sidebar.TButton", background="#0a101b", foreground="#aeb8c7",
+            font=("Segoe UI", 10), padding=(12, 10), anchor="w", borderwidth=0,
+        )
+        style.map("Sidebar.TButton", background=[("active", "#172234")], foreground=[("active", "#ffffff")])
+        style.configure(
+            "SidebarActive.TButton", background="#172b24", foreground="#86efac",
+            font=("Segoe UI Semibold", 10), padding=(12, 10), anchor="w", borderwidth=0,
+        )
+        style.map("SidebarActive.TButton", background=[("active", "#1e3a2f")])
         style.configure("TLabel", background=self.BG, foreground=self.TEXT, font=("Segoe UI", 10))
         style.configure("Card.TLabel", background=self.CARD, foreground=self.TEXT)
         style.configure("Title.TLabel", background=self.BG, foreground="#ffffff", font=("Segoe UI Semibold", 20))
@@ -964,6 +1292,38 @@ class ModernAvitoMonitorApp:
     @staticmethod
     def _label(parent: ttk.Widget, text: str, row: int, column: int) -> None:
         ttk.Label(parent, text=text, style="Card.TLabel").grid(row=row, column=column, sticky="w", pady=5)
+
+    def show_page(self, page_name: str, title: str) -> None:
+        self.pages[page_name].tkraise()
+        self.page_title_var.set(title)
+        for key, button in self.nav_buttons.items():
+            button.configure(style="SidebarActive.TButton" if key == page_name else "Sidebar.TButton")
+
+    def apply_smart_query(self, _event: object = None) -> None:
+        value = self.smart_query_var.get().strip()
+        if not value:
+            messagebox.showerror("Пустой запрос", "Напиши, что искать, например: оперативка 2x16 32gb")
+            return
+        product, manufacturer, extra = detect_smart_query(value)
+        if product == "Другой товар":
+            messagebox.showinfo(
+                "Тип не распознан",
+                "Не удалось определить комплектующую. Выбери её вручную, а характеристики оставь в поле ниже.",
+            )
+            self.product_var.set("Другой товар")
+            self.on_product_changed()
+            self.extra_var.set(extra or value)
+            return
+        self.product_var.set(product)
+        self.on_product_changed()
+        self.manufacturer_var.set(manufacturer)
+        self.extra_var.set(extra)
+        details = f"Распознано: {product}"
+        if manufacturer != "Любой производитель":
+            details += f" • {manufacturer}"
+        if extra:
+            details += f" • {extra}"
+        self.status.set(details)
 
     def on_product_changed(self, _event: object = None) -> None:
         makers = PRODUCTS[self.product_var.get()][1]
@@ -1005,14 +1365,19 @@ class ModernAvitoMonitorApp:
 
     def start(self) -> None:
         try:
+            if self.login_active:
+                raise ValueError("Сначала закончи вход в Avito и закрой окно Brave")
             max_price = int(self.price_var.get()) if self.price_var.get().strip() else None
             interval = int(self.interval_var.get())
+            max_pages = int(self.pages_var.get())
             max_actions = int(self.max_actions_var.get())
             url = self.search_url(max_price)
             if max_price is not None and max_price <= 0:
                 raise ValueError("Максимальная цена должна быть больше нуля")
             if interval < MIN_INTERVAL_SECONDS:
                 raise ValueError(f"Минимальный интервал — {MIN_INTERVAL_SECONDS} секунд")
+            if not 1 <= max_pages <= 20:
+                raise ValueError("Количество страниц должно быть от 1 до 20")
             if not 1 <= max_actions <= 10:
                 raise ValueError("Лимит действий должен быть от 1 до 10")
             if self.auto_message.get() and not self.message_var.get().strip():
@@ -1034,17 +1399,71 @@ class ModernAvitoMonitorApp:
             confirm_purchase=self.auto_purchase.get(),
             max_actions=max_actions,
         )
+        self.results.delete(*self.results.get_children())
+        self.listing_urls.clear()
+        self.auto_opened_results = False
         self.start_button.configure(state="disabled", text="●  Поиск работает", style="Running.TButton")
         self.stop_button.configure(state="normal")
+        self.login_button.configure(state="disabled")
         self.worker.start(
             url,
             max_price,
             interval,
+            max_pages,
+            self.product_var.get(),
+            self.manufacturer_var.get().strip(),
+            self.extra_var.get().strip(),
+            self.smart_filter_var.get(),
             self.visible_browser.get(),
             self.browser_var.get(),
             self.profile_slot,
             automation,
         )
+
+    def open_login(self) -> None:
+        if self.worker.thread is not None and self.worker.thread.is_alive():
+            messagebox.showinfo("Монитор работает", "Сначала останови поиск, затем открой вход в Avito.")
+            return
+        if self.login_active:
+            return
+        browser_name = self.browser_var.get()
+        executable = system_browser(browser_name)
+        if browser_name == "Brave" and not executable:
+            messagebox.showerror("Brave не найден", "Установи Brave и снова нажми «Войти в Avito».")
+            return
+        self.login_active = True
+        self.login_button.configure(state="disabled", text="Окно входа открыто")
+        self.status.set(f"Войди в Avito в {browser_name}, затем закрой окно браузера")
+        threading.Thread(
+            target=self._login_worker,
+            args=(browser_name, executable),
+            daemon=True,
+        ).start()
+
+    def _login_worker(self, browser_name: str, executable: str | None) -> None:
+        try:
+            with sync_playwright() as playwright:
+                options: dict[str, object] = {
+                    "headless": False,
+                    "locale": "ru-RU",
+                    "viewport": {"width": 1280, "height": 900},
+                }
+                if executable:
+                    options["executable_path"] = executable
+                context = playwright.chromium.launch_persistent_context(
+                    str(browser_profile_dir(browser_name, self.profile_slot)),
+                    **options,
+                )
+                closed = threading.Event()
+                context.on("close", lambda: closed.set())
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto("https://www.avito.ru/profile", wait_until="domcontentloaded", timeout=60_000)
+                self.events.put(("login_wait", browser_name))
+                while not closed.wait(0.5):
+                    pass
+                self.events.put(("login_done", browser_name))
+        except Exception as exc:
+            self.events.put(("login_error", str(exc)))
 
     def open_second_monitor(self) -> None:
         if self.second_window is not None and self.second_window.winfo_exists():
@@ -1081,6 +1500,9 @@ class ModernAvitoMonitorApp:
                 assert isinstance(item, Listing)
                 row_id = self.results.insert("", 0, values=(item.display_price, item.title))
                 self.listing_urls[row_id] = item.url
+                if not self.auto_opened_results:
+                    self.auto_opened_results = True
+                    self.show_page("results", "Найденные объявления")
                 self.root.bell()
             elif event in {"status", "automation"}:
                 self.status.set(str(payload))
@@ -1096,9 +1518,21 @@ class ModernAvitoMonitorApp:
                     "Нужна проверка Avito",
                     "Пройди проверку в открытом Brave. Монитор продолжит работу автоматически.",
                 )
+            elif event == "login_wait":
+                self.status.set(f"Войди в Avito в {payload}, затем закрой окно браузера")
+            elif event == "login_done":
+                self.login_active = False
+                self.login_button.configure(state="normal", text="Войти в Avito")
+                self.status.set("Вход сохранён. Можно запускать монитор")
+            elif event == "login_error":
+                self.login_active = False
+                self.login_button.configure(state="normal", text="Войти в Avito")
+                self.status.set("Не удалось открыть окно входа")
+                messagebox.showerror("Ошибка входа", str(payload))
             elif event == "stopped":
                 self.start_button.configure(state="normal", text="▶  Старт", style="Accent.TButton")
                 self.stop_button.configure(state="disabled")
+                self.login_button.configure(state="normal")
         self.root.after(150, self.process_events)
 
     def close(self) -> None:
