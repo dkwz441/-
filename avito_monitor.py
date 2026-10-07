@@ -497,9 +497,9 @@ def wait_for_manual_challenge(
         else:
             if challenge_cleared_at is None:
                 challenge_cleared_at = time.monotonic()
-            elif time.monotonic() - challenge_cleared_at >= 1 and reloads < 4:
+            elif time.monotonic() - challenge_cleared_at >= 1 and reloads < 1:
                 reloads += 1
-                emit("status", f"Проверка завершилась, перезагружаю Avito ({reloads}/4)…")
+                emit("status", "Проверка завершилась, один раз перезагружаю Avito…")
                 page.reload(wait_until="domcontentloaded", timeout=60_000)
                 challenge_cleared_at = time.monotonic()
         stop_event.wait(2)
@@ -679,11 +679,11 @@ def load_results_page(
     stop_event: threading.Event,
     emit: Callable[[str, object], None],
 ) -> list[Listing]:
-    for attempt in range(1, 4):
+    for attempt in range(1, 3):
         if attempt == 1:
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         else:
-            emit("status", f"Avito не загрузился, обновляю страницу ({attempt}/3)…")
+            emit("status", "Avito не загрузился, один раз обновляю страницу…")
             page.reload(wait_until="domcontentloaded", timeout=60_000)
         try:
             page.locator(CARD_SELECTOR).first.wait_for(timeout=20_000)
@@ -1594,10 +1594,6 @@ class ModernAvitoMonitorApp:
                 page.reload(wait_until="domcontentloaded", timeout=60_000)
                 self.events.put(("login_status", f"Войди в Avito в {browser_name} — проверю вход автоматически"))
                 deadline = time.monotonic() + CHALLENGE_WAIT_SECONDS
-                challenge_seen = False
-                cleared_at: float | None = None
-                stuck_since: float | None = None
-                reloads = 0
                 while time.monotonic() < deadline:
                     if closed.wait(1):
                         raise RuntimeError("Окно Brave закрыто до подтверждения входа в аккаунт")
@@ -1607,34 +1603,8 @@ class ModernAvitoMonitorApp:
                         context.close()
                         return
                     if page_has_challenge(page):
-                        challenge_seen = True
-                        cleared_at = None
                         self.events.put(("login_status", "Avito проверяет IP. Жду завершения проверки…"))
                         continue
-                    if challenge_seen:
-                        if cleared_at is None:
-                            cleared_at = time.monotonic()
-                        elif time.monotonic() - cleared_at >= 1 and reloads < 4:
-                            reloads += 1
-                            self.events.put(("login_status", f"Проверка завершена. Обновляю Avito ({reloads}/4)…"))
-                            page.goto("https://www.avito.ru/profile", wait_until="domcontentloaded", timeout=60_000)
-                            cleared_at = time.monotonic()
-                    else:
-                        try:
-                            body = normalize_search_text(page.locator("body").inner_text(timeout=3_000))
-                        except Exception:
-                            body = ""
-                        looks_stuck = len(body) < 80 or body in {"загрузка", "подождите", "loading"}
-                        if looks_stuck:
-                            if stuck_since is None:
-                                stuck_since = time.monotonic()
-                            elif time.monotonic() - stuck_since >= 10 and reloads < 4:
-                                reloads += 1
-                                self.events.put(("login_status", f"Страница зависла. Обновляю Avito ({reloads}/4)…"))
-                                page.goto("https://www.avito.ru/profile", wait_until="domcontentloaded", timeout=60_000)
-                                stuck_since = time.monotonic()
-                        else:
-                            stuck_since = None
                 context.close()
                 raise RuntimeError("Вход не подтверждён за 10 минут")
         except Exception as exc:
