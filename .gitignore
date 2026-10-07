@@ -2,6 +2,7 @@
 .avito-browser-profile/
 .avito-brave-profile*/
 .avito-seen*.json
+.avito-auth-state.json
 __pycache__/
 .pytest_cache/
 .pw-browsers/

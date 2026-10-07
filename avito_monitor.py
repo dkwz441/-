@@ -23,6 +23,7 @@ from playwright.sync_api import BrowserContext, Page, sync_playwright
 APP_DIR = Path(__file__).resolve().parent
 PROFILE_DIR = APP_DIR / ".avito-browser-profile"
 SEEN_FILE = APP_DIR / ".avito-seen.json"
+AUTH_STATE_FILE = APP_DIR / ".avito-auth-state.json"
 MIN_INTERVAL_SECONDS = 60
 CHALLENGE_WAIT_SECONDS = 600
 CARD_SELECTOR = '[data-marker="item"], [data-item-id]'
@@ -465,6 +466,11 @@ def page_has_challenge(page: Page) -> bool:
         "подтвердите, что вы не робот",
         "пройдите проверку",
         "проверка безопасности",
+        "проверяем ваш браузер",
+        "проверка ip",
+        "это займет несколько секунд",
+        "checking your browser",
+        "security check",
     )
     try:
         haystack = f"{page.title()} {page.url} {page.locator('body').inner_text(timeout=3_000)}".lower()
@@ -480,10 +486,22 @@ def wait_for_manual_challenge(
 ) -> bool:
     emit("challenge", None)
     deadline = time.monotonic() + CHALLENGE_WAIT_SECONDS
+    challenge_cleared_at: float | None = None
+    reloads = 0
     while time.monotonic() < deadline and not stop_event.is_set():
         if page.locator(CARD_SELECTOR).count() > 0 and not page_has_challenge(page):
             emit("status", "Проверка пройдена, продолжаю мониторинг…")
             return True
+        if page_has_challenge(page):
+            challenge_cleared_at = None
+        else:
+            if challenge_cleared_at is None:
+                challenge_cleared_at = time.monotonic()
+            elif time.monotonic() - challenge_cleared_at >= 5 and reloads < 4:
+                reloads += 1
+                emit("status", f"Проверка завершилась, перезагружаю Avito ({reloads}/4)…")
+                page.reload(wait_until="domcontentloaded", timeout=60_000)
+                challenge_cleared_at = time.monotonic()
         stop_event.wait(2)
     return False
 
@@ -514,6 +532,76 @@ def system_browser(preferred: str = "Chromium") -> str | None:
 def browser_profile_dir(browser_name: str, profile_slot: int) -> Path:
     profile_name = ".avito-brave-profile" if browser_name == "Brave" else ".avito-browser-profile"
     return APP_DIR / f"{profile_name}-{profile_slot}"
+
+
+def save_auth_state(context: BrowserContext) -> None:
+    context.storage_state(path=str(AUTH_STATE_FILE))
+
+
+def restore_auth_state(context: BrowserContext) -> bool:
+    try:
+        state = json.loads(AUTH_STATE_FILE.read_text(encoding="utf-8"))
+        cookies = state.get("cookies", [])
+        if cookies:
+            context.add_cookies(cookies)
+        for origin_data in state.get("origins", []):
+            origin = origin_data.get("origin")
+            storage = origin_data.get("localStorage", [])
+            if not origin or not storage:
+                continue
+            payload = json.dumps({"origin": origin, "items": storage}, ensure_ascii=True)
+            script = f"""
+            (() => {{
+              const data = {payload};
+              if (location.origin === data.origin) {{
+                for (const item of data.items) localStorage.setItem(item.name, item.value);
+              }}
+            }})();
+            """
+            context.add_init_script(script=script)
+        return bool(cookies)
+    except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
+        return False
+
+
+def is_avito_logged_in(page: Page) -> bool:
+    try:
+        url = page.url.casefold()
+        body = normalize_search_text(page.locator("body").inner_text(timeout=3_000))
+        username_controls = page.locator(
+            '[data-marker="header/username-button"], [data-marker="header/profile"], '
+            'a[href*="/profile/items"], a[href*="/profile/messenger"]'
+        ).count()
+        login_controls = page.locator(
+            '[data-marker="header/login-button"], a[href*="/login"], button:has-text("Войти")'
+        ).count()
+    except Exception:
+        return False
+    logged_out_signals = (
+        "войти или зарегистрироваться",
+        "вход и регистрация",
+        "войти в аккаунт",
+        "продолжить с телефоном",
+    )
+    if "login" in url or any(signal in body for signal in logged_out_signals):
+        return False
+    if username_controls and not login_controls:
+        return True
+    logged_in_signals = (
+        "мои объявления",
+        "мои заказы",
+        "настройки профиля",
+        "управление профилем",
+        "кошелек",
+        "отзывы",
+    )
+    if "/profile" in url and any(signal in body for signal in logged_in_signals):
+        return True
+    try:
+        cookie_names = {cookie["name"].casefold() for cookie in page.context.cookies("https://www.avito.ru")}
+    except Exception:
+        cookie_names = set()
+    return "/profile" in url and "sessid" in cookie_names and not login_controls and len(body) > 100
 
 
 def click_named_control(page: Page, names: tuple[str, ...]) -> bool:
@@ -591,19 +679,32 @@ def load_results_page(
     stop_event: threading.Event,
     emit: Callable[[str, object], None],
 ) -> list[Listing]:
-    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-    try:
-        page.locator(CARD_SELECTOR).first.wait_for(timeout=20_000)
-    except Exception:
-        if page_has_challenge(page):
-            if not visible:
-                raise RuntimeError(
-                    "Avito запросил проверку. Включи «Показывать браузер» и запусти монитор снова."
-                )
-            if not wait_for_manual_challenge(page, stop_event, emit):
+    for attempt in range(1, 4):
+        if attempt == 1:
+            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        else:
+            emit("status", f"Avito не загрузился, обновляю страницу ({attempt}/3)…")
+            page.reload(wait_until="domcontentloaded", timeout=60_000)
+        try:
+            page.locator(CARD_SELECTOR).first.wait_for(timeout=20_000)
+            return extract_listings(page)
+        except Exception:
+            if page_has_challenge(page):
+                if not visible:
+                    raise RuntimeError(
+                        "Avito запросил проверку. Включи «Показывать браузер» и запусти монитор снова."
+                    )
+                if wait_for_manual_challenge(page, stop_event, emit):
+                    return extract_listings(page)
                 if stop_event.is_set():
                     return []
                 raise RuntimeError("Проверка Avito не пройдена за 10 минут.")
+            try:
+                body = normalize_search_text(page.locator("body").inner_text(timeout=3_000))
+            except Exception:
+                body = ""
+            if "ничего не найдено" in body or "объявлений не найдено" in body:
+                return []
     return extract_listings(page)
 
 
@@ -678,6 +779,8 @@ class MonitorWorker:
                     str(profile_dir),
                     **launch_options,
                 )
+                if restore_auth_state(context):
+                    self.emit("status", "Сохранённая сессия Avito загружена")
                 page = context.pages[0] if context.pages else context.new_page()
                 while not self.stop_event.is_set():
                     items: list[Listing] = []
@@ -974,20 +1077,20 @@ class AvitoMonitorApp:
 
 
 class ModernAvitoMonitorApp:
-    BG = "#0f172a"
-    CARD = "#182235"
-    FIELD = "#0b1220"
-    TEXT = "#e5e7eb"
-    MUTED = "#94a3b8"
-    ACCENT = "#ff6b00"
+    BG = "#0b0f12"
+    CARD = "#111714"
+    FIELD = "#080c0e"
+    TEXT = "#e8ecea"
+    MUTED = "#7f8a84"
+    ACCENT = "#20b86a"
 
     def __init__(self, root: tk.Misc, profile_slot: int = 1) -> None:
         self.root = root
         self.profile_slot = profile_slot
         self.second_window: tk.Toplevel | None = None
         self.root.title(f"Avito Parts Hunter — монитор {profile_slot}")
-        self.root.geometry("1120x820")
-        self.root.minsize(900, 680)
+        self.root.geometry("1020x720")
+        self.root.minsize(860, 620)
         self.root.configure(bg=self.BG)
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker = MonitorWorker(self.events.put)
@@ -1144,19 +1247,19 @@ class ModernAvitoMonitorApp:
         )
         automation.grid(row=0, column=0, sticky="nsew")
         automation.columnconfigure(0, weight=1)
-        ttk.Checkbutton(
-            automation, text="Написать продавцу", variable=self.auto_message
-        ).grid(row=0, column=0, sticky="w", pady=3)
-        ttk.Entry(automation, textvariable=self.message_var).grid(row=1, column=0, sticky="ew", pady=(2, 8))
-        ttk.Checkbutton(
-            automation, text="Открыть оформление доставки", variable=self.auto_checkout
-        ).grid(row=2, column=0, sticky="w", pady=3)
-        ttk.Checkbutton(
-            automation, text="Подтвердить заказ автоматически", variable=self.auto_purchase
-        ).grid(row=3, column=0, sticky="w", pady=3)
-        ttk.Checkbutton(
-            automation, text="Разрешаю списание", variable=self.allow_charge
-        ).grid(row=4, column=0, sticky="w", pady=3)
+        self._toggle_row(
+            automation, 0, "Сообщение продавцу", "Автоматически попросить поставить товар в бронь", self.auto_message
+        )
+        ttk.Entry(automation, textvariable=self.message_var).grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        self._toggle_row(
+            automation, 2, "Открыть оформление", "Перейти к оформлению Авито Доставки", self.auto_checkout
+        )
+        self._toggle_row(
+            automation, 3, "Подтвердить заказ", "Нажать финальную кнопку заказа", self.auto_purchase
+        )
+        self._toggle_row(
+            automation, 4, "Разрешить списание", "Использовать сохранённый способ оплаты", self.allow_charge
+        )
         limit_row = ttk.Frame(automation, style="Card.TFrame")
         limit_row.grid(row=5, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(limit_row, text="Лимит действий:", style="Card.TLabel").pack(side="left")
@@ -1202,8 +1305,8 @@ class ModernAvitoMonitorApp:
         account.columnconfigure(0, weight=1)
         ttk.Label(
             account,
-            text="Открой Brave, войди в аккаунт Avito и закрой окно браузера.\n"
-                 "Сессия сохранится локально для этого монитора.",
+            text="Открой Brave и войди в аккаунт Avito.\n"
+                 "Скрипт проверит вход, сохранит сессию и сам закроет окно.",
             style="Card.TLabel",
             justify="left",
         ).grid(row=0, column=0, sticky="w", pady=(0, 18))
@@ -1234,22 +1337,31 @@ class ModernAvitoMonitorApp:
         style.theme_use("clam")
         style.configure("TFrame", background=self.BG)
         style.configure("Card.TFrame", background=self.CARD)
-        style.configure("Sidebar.TFrame", background="#0a101b")
+        style.configure("Option.TFrame", background="#142019", relief="flat")
         style.configure(
-            "SidebarTitle.TLabel", background="#0a101b", foreground="#ffffff",
+            "OptionTitle.TLabel", background="#142019", foreground="#eaf5ee",
+            font=("Segoe UI Semibold", 10),
+        )
+        style.configure(
+            "OptionDesc.TLabel", background="#142019", foreground="#718078",
+            font=("Segoe UI", 8),
+        )
+        style.configure("Sidebar.TFrame", background="#070a0c")
+        style.configure(
+            "SidebarTitle.TLabel", background="#070a0c", foreground="#ffffff",
             font=("Segoe UI Semibold", 16),
         )
         style.configure(
-            "SidebarMuted.TLabel", background="#0a101b", foreground="#64748b",
+            "SidebarMuted.TLabel", background="#070a0c", foreground="#627068",
             font=("Segoe UI Semibold", 8),
         )
         style.configure(
-            "Sidebar.TButton", background="#0a101b", foreground="#aeb8c7",
+            "Sidebar.TButton", background="#070a0c", foreground="#a6afa9",
             font=("Segoe UI", 10), padding=(12, 10), anchor="w", borderwidth=0,
         )
         style.map("Sidebar.TButton", background=[("active", "#172234")], foreground=[("active", "#ffffff")])
         style.configure(
-            "SidebarActive.TButton", background="#172b24", foreground="#86efac",
+            "SidebarActive.TButton", background="#13251b", foreground="#73e5a4",
             font=("Segoe UI Semibold", 10), padding=(12, 10), anchor="w", borderwidth=0,
         )
         style.map("SidebarActive.TButton", background=[("active", "#1e3a2f")])
@@ -1275,11 +1387,13 @@ class ModernAvitoMonitorApp:
         style.configure("Accent.TButton", background=self.ACCENT, foreground="#ffffff", font=("Segoe UI Semibold", 10), padding=(18, 9))
         style.map(
             "Accent.TButton",
-            background=[("active", "#ff8124"), ("disabled", self.ACCENT)],
+            background=[("active", "#2ed67e"), ("disabled", self.ACCENT)],
             foreground=[("disabled", "#ffffff")],
         )
-        style.configure("Running.TButton", background="#15803d", foreground="#ffffff", font=("Segoe UI Semibold", 10), padding=(18, 9))
-        style.map("Running.TButton", background=[("disabled", "#15803d")], foreground=[("disabled", "#ffffff")])
+        style.configure("Running.TButton", background="#167747", foreground="#ffffff", font=("Segoe UI Semibold", 10), padding=(18, 9))
+        style.map("Running.TButton", background=[("disabled", "#167747")], foreground=[("disabled", "#ffffff")])
+        style.configure("Switch.TCheckbutton", background="#142019", foreground=self.ACCENT, padding=6)
+        style.map("Switch.TCheckbutton", background=[("active", "#142019")])
         style.configure("Danger.TButton", background="#b91c1c", foreground="#ffffff")
         style.map("Danger.TButton", background=[("active", "#dc2626"), ("disabled", "#3f2529")])
         style.configure("Treeview", background=self.FIELD, fieldbackground=self.FIELD, foreground=self.TEXT, rowheight=30, borderwidth=0)
@@ -1292,6 +1406,23 @@ class ModernAvitoMonitorApp:
     @staticmethod
     def _label(parent: ttk.Widget, text: str, row: int, column: int) -> None:
         ttk.Label(parent, text=text, style="Card.TLabel").grid(row=row, column=column, sticky="w", pady=5)
+
+    @staticmethod
+    def _toggle_row(
+        parent: ttk.Widget,
+        row: int,
+        title: str,
+        description: str,
+        variable: tk.BooleanVar,
+    ) -> None:
+        option = ttk.Frame(parent, style="Option.TFrame", padding=(12, 9))
+        option.grid(row=row, column=0, sticky="ew", pady=3)
+        option.columnconfigure(0, weight=1)
+        ttk.Label(option, text=title, style="OptionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(option, text=description, style="OptionDesc.TLabel").grid(row=1, column=0, sticky="w")
+        ttk.Checkbutton(option, variable=variable, style="Switch.TCheckbutton").grid(
+            row=0, column=1, rowspan=2, sticky="e", padx=(12, 0)
+        )
 
     def show_page(self, page_name: str, title: str) -> None:
         self.pages[page_name].tkraise()
@@ -1433,7 +1564,7 @@ class ModernAvitoMonitorApp:
             return
         self.login_active = True
         self.login_button.configure(state="disabled", text="Окно входа открыто")
-        self.status.set(f"Войди в Avito в {browser_name}, затем закрой окно браузера")
+        self.status.set(f"Войди в Avito в {browser_name}; окно закроется после успешной проверки")
         threading.Thread(
             target=self._login_worker,
             args=(browser_name, executable),
@@ -1458,10 +1589,51 @@ class ModernAvitoMonitorApp:
                 context.on("close", lambda: closed.set())
                 page = context.pages[0] if context.pages else context.new_page()
                 page.goto("https://www.avito.ru/profile", wait_until="domcontentloaded", timeout=60_000)
-                self.events.put(("login_wait", browser_name))
-                while not closed.wait(0.5):
-                    pass
-                self.events.put(("login_done", browser_name))
+                self.events.put(("login_status", f"Войди в Avito в {browser_name} — проверю вход автоматически"))
+                deadline = time.monotonic() + CHALLENGE_WAIT_SECONDS
+                challenge_seen = False
+                cleared_at: float | None = None
+                stuck_since: float | None = None
+                reloads = 0
+                while time.monotonic() < deadline:
+                    if closed.wait(1):
+                        raise RuntimeError("Окно Brave закрыто до подтверждения входа в аккаунт")
+                    if is_avito_logged_in(page):
+                        save_auth_state(context)
+                        self.events.put(("login_done", browser_name))
+                        context.close()
+                        return
+                    if page_has_challenge(page):
+                        challenge_seen = True
+                        cleared_at = None
+                        self.events.put(("login_status", "Avito проверяет IP. Жду завершения проверки…"))
+                        continue
+                    if challenge_seen:
+                        if cleared_at is None:
+                            cleared_at = time.monotonic()
+                        elif time.monotonic() - cleared_at >= 5 and reloads < 4:
+                            reloads += 1
+                            self.events.put(("login_status", f"Проверка завершена. Обновляю Avito ({reloads}/4)…"))
+                            page.goto("https://www.avito.ru/profile", wait_until="domcontentloaded", timeout=60_000)
+                            cleared_at = time.monotonic()
+                    else:
+                        try:
+                            body = normalize_search_text(page.locator("body").inner_text(timeout=3_000))
+                        except Exception:
+                            body = ""
+                        looks_stuck = len(body) < 80 or body in {"загрузка", "подождите", "loading"}
+                        if looks_stuck:
+                            if stuck_since is None:
+                                stuck_since = time.monotonic()
+                            elif time.monotonic() - stuck_since >= 10 and reloads < 4:
+                                reloads += 1
+                                self.events.put(("login_status", f"Страница зависла. Обновляю Avito ({reloads}/4)…"))
+                                page.goto("https://www.avito.ru/profile", wait_until="domcontentloaded", timeout=60_000)
+                                stuck_since = time.monotonic()
+                        else:
+                            stuck_since = None
+                context.close()
+                raise RuntimeError("Вход не подтверждён за 10 минут")
         except Exception as exc:
             self.events.put(("login_error", str(exc)))
 
@@ -1518,8 +1690,8 @@ class ModernAvitoMonitorApp:
                     "Нужна проверка Avito",
                     "Пройди проверку в открытом Brave. Монитор продолжит работу автоматически.",
                 )
-            elif event == "login_wait":
-                self.status.set(f"Войди в Avito в {payload}, затем закрой окно браузера")
+            elif event == "login_status":
+                self.status.set(str(payload))
             elif event == "login_done":
                 self.login_active = False
                 self.login_button.configure(state="normal", text="Войти в Avito")
