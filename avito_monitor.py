@@ -877,14 +877,21 @@ class ModernAvitoMonitorApp:
 
         controls = ttk.Frame(main)
         controls.grid(row=2, column=0, columnspan=2, sticky="ew", pady=14)
-        self.start_button = ttk.Button(controls, text="▶  ЗАПУСТИТЬ ПОИСК", style="Accent.TButton", command=self.start)
-        self.start_button.pack(side="left")
-        self.stop_button = ttk.Button(controls, text="■  ОСТАНОВИТЬ", command=self.stop, state="disabled")
-        self.stop_button.pack(side="left", padx=8)
-        ttk.Button(controls, text="Очистить просмотренные", command=self.clear_seen).pack(side="left")
+        controls.columnconfigure(4, weight=1)
+        self.start_button = ttk.Button(
+            controls, text="▶  Старт", style="Accent.TButton", command=self.start
+        )
+        self.start_button.grid(row=0, column=0, padx=(0, 7))
+        self.stop_button = ttk.Button(
+            controls, text="■  Стоп", style="Danger.TButton", command=self.stop, state="disabled"
+        )
+        self.stop_button.grid(row=0, column=1, padx=(0, 7))
+        ttk.Button(controls, text="Очистить историю", command=self.clear_seen).grid(
+            row=0, column=2, padx=(0, 7)
+        )
         if self.profile_slot == 1:
-            ttk.Button(controls, text="＋ ВТОРОЙ МОНИТОР", command=self.open_second_monitor).pack(
-                side="right"
+            ttk.Button(controls, text="＋ Второе окно", command=self.open_second_monitor).grid(
+                row=0, column=5, sticky="e"
             )
 
         results_card = ttk.LabelFrame(main, text="  Найденные объявления  ", style="Card.TLabelframe", padding=10)
@@ -932,9 +939,21 @@ class ModernAvitoMonitorApp:
         style.configure("TCheckbutton", background=self.CARD, foreground=self.TEXT, font=("Segoe UI", 10))
         style.map("TCheckbutton", background=[("active", self.CARD)], foreground=[("active", "#ffffff")])
         style.configure("TButton", background="#334155", foreground="#ffffff", padding=(13, 8), borderwidth=0)
-        style.map("TButton", background=[("active", "#475569"), ("disabled", "#1e293b")])
+        style.map(
+            "TButton",
+            background=[("active", "#475569"), ("disabled", "#1e293b")],
+            foreground=[("disabled", "#64748b")],
+        )
         style.configure("Accent.TButton", background=self.ACCENT, foreground="#ffffff", font=("Segoe UI Semibold", 10), padding=(18, 9))
-        style.map("Accent.TButton", background=[("active", "#ff8124"), ("disabled", "#7c3b0e")])
+        style.map(
+            "Accent.TButton",
+            background=[("active", "#ff8124"), ("disabled", self.ACCENT)],
+            foreground=[("disabled", "#ffffff")],
+        )
+        style.configure("Running.TButton", background="#15803d", foreground="#ffffff", font=("Segoe UI Semibold", 10), padding=(18, 9))
+        style.map("Running.TButton", background=[("disabled", "#15803d")], foreground=[("disabled", "#ffffff")])
+        style.configure("Danger.TButton", background="#b91c1c", foreground="#ffffff")
+        style.map("Danger.TButton", background=[("active", "#dc2626"), ("disabled", "#3f2529")])
         style.configure("Treeview", background=self.FIELD, fieldbackground=self.FIELD, foreground=self.TEXT, rowheight=30, borderwidth=0)
         style.configure("Treeview.Heading", background="#263449", foreground="#ffffff", font=("Segoe UI Semibold", 10), padding=7)
         style.map("Treeview", background=[("selected", "#334e68")])
@@ -1015,7 +1034,7 @@ class ModernAvitoMonitorApp:
             confirm_purchase=self.auto_purchase.get(),
             max_actions=max_actions,
         )
-        self.start_button.configure(state="disabled")
+        self.start_button.configure(state="disabled", text="●  Поиск работает", style="Running.TButton")
         self.stop_button.configure(state="normal")
         self.worker.start(
             url,
@@ -1078,7 +1097,7 @@ class ModernAvitoMonitorApp:
                     "Пройди проверку в открытом Brave. Монитор продолжит работу автоматически.",
                 )
             elif event == "stopped":
-                self.start_button.configure(state="normal")
+                self.start_button.configure(state="normal", text="▶  Старт", style="Accent.TButton")
                 self.stop_button.configure(state="disabled")
         self.root.after(150, self.process_events)
 
