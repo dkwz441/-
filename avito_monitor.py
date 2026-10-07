@@ -497,7 +497,7 @@ def wait_for_manual_challenge(
         else:
             if challenge_cleared_at is None:
                 challenge_cleared_at = time.monotonic()
-            elif time.monotonic() - challenge_cleared_at >= 5 and reloads < 4:
+            elif time.monotonic() - challenge_cleared_at >= 1 and reloads < 4:
                 reloads += 1
                 emit("status", f"Проверка завершилась, перезагружаю Avito ({reloads}/4)…")
                 page.reload(wait_until="domcontentloaded", timeout=60_000)
@@ -1589,6 +1589,9 @@ class ModernAvitoMonitorApp:
                 context.on("close", lambda: closed.set())
                 page = context.pages[0] if context.pages else context.new_page()
                 page.goto("https://www.avito.ru/profile", wait_until="domcontentloaded", timeout=60_000)
+                self.events.put(("login_status", "Avito открыт. Через секунду обновляю страницу…"))
+                page.wait_for_timeout(1_000)
+                page.reload(wait_until="domcontentloaded", timeout=60_000)
                 self.events.put(("login_status", f"Войди в Avito в {browser_name} — проверю вход автоматически"))
                 deadline = time.monotonic() + CHALLENGE_WAIT_SECONDS
                 challenge_seen = False
@@ -1611,7 +1614,7 @@ class ModernAvitoMonitorApp:
                     if challenge_seen:
                         if cleared_at is None:
                             cleared_at = time.monotonic()
-                        elif time.monotonic() - cleared_at >= 5 and reloads < 4:
+                        elif time.monotonic() - cleared_at >= 1 and reloads < 4:
                             reloads += 1
                             self.events.put(("login_status", f"Проверка завершена. Обновляю Avito ({reloads}/4)…"))
                             page.goto("https://www.avito.ru/profile", wait_until="domcontentloaded", timeout=60_000)
